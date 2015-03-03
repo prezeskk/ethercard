@@ -27,6 +27,18 @@ public:
     */
     static void initSPI ();
 
+    static int packetPayloadSize;
+    static byte readByte();
+    static void send();
+    static void finalizeConn();
+    static void fillAndSend(char* charPtr,bool fromPgM);
+    static void fillAndSend(char* charPtr);
+    static void fillAndSend(char chr);
+    static void fillAndSend(byte intgr);
+    static void fillAndSend(int intgr);
+    static void fillAndSend(byte* bytes,int s);
+    static void setBufferPtr(int TCPPayloadPos);
+
     /**   @brief  Initialise network interface
     *     @param  size Size of data buffer
     *     @param  macaddr Pointer to 6 byte hardware (MAC) address

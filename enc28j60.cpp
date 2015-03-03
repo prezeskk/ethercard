@@ -364,7 +364,131 @@ static void writePhy (byte address, uint16_t data) {
         ;
 }
 
+//--------------------
+// July 2014
+// Huseyin Atasoy
+//---------------------------------------------------------------------------
+#include "EtherCard.h" // For ether.httpServerReply_with_flags() function
+#include "net.h" // For TCP_FLAGS_FIN_V and TCP_FLAGS_ACK_V flags
+
+byte* tcpPayloadPos;
+byte* endOfBuffer;
+int tcpMaxPayload;
+byte lastReceivedPacketFlag;
+
+int ENC28J60::packetPayloadSize;
+byte* bufferPtr;
+int totalBytesCopied;
+byte ENC28J60::readByte() {
+    if (bufferPtr == endOfBuffer) {
+        int remaining=packetPayloadSize;
+        if (remaining > 0) {
+            if (remaining > tcpMaxPayload) remaining = tcpMaxPayload;
+            bufferPtr = tcpPayloadPos;
+            readBuf(remaining,bufferPtr);
+        }
+    }
+    packetPayloadSize--;
+    byte b = *(bufferPtr++);
+
+    if (packetPayloadSize == 0) {
+        if ((lastReceivedPacketFlag & TCP_FLAGS_PUSH_V) == 0) {
+            uint16_t tcpPayloadOffset = ether.packetLoop(packetReceive());
+            if (tcpPayloadOffset > 0)
+                setBufferPtr(tcpPayloadOffset);
+            else
+                packetPayloadSize = 0; // It can be changed by packetReceive()
+        }
+    }
+
+    return b;
+}
+
+void ENC28J60::send() {
+  ether.httpServerReply_with_flags(totalBytesCopied, TCP_FLAGS_ACK_V);
+  totalBytesCopied = 0;
+}
+
+void ENC28J60::finalizeConn() {
+  if (totalBytesCopied > 0)
+    ether.httpServerReply_with_flags(totalBytesCopied, TCP_FLAGS_ACK_V | TCP_FLAGS_PUSH_V);
+  totalBytesCopied = 0;
+  ether.httpServerReply_with_flags(0, TCP_FLAGS_ACK_V | TCP_FLAGS_FIN_V);
+}
+
+void ENC28J60::fillAndSend(char* charPtr, bool fromPgM) {
+  bool notCompleted;
+  byte b;
+start:
+  notCompleted = true;
+  while (totalBytesCopied<tcpMaxPayload) {
+    if (fromPgM)
+      b = pgm_read_byte(charPtr++);
+    else
+      b = *charPtr++;
+    if (b == 0) {
+      notCompleted = false;
+      break;
+    }
+    *(tcpPayloadPos+(totalBytesCopied++)) = b;
+  }
+  // The buffer is full, send and continue
+  if (notCompleted) {
+    send();
+    goto start;
+  }
+}
+
+void ENC28J60::fillAndSend(char* charPtr) {
+  fillAndSend(charPtr, true);
+}
+
+char* chrBuff = new char[4];
+void ENC28J60::fillAndSend(char chr) {
+  chrBuff[0] = chr;
+  chrBuff[1] = 0; // String terminator
+  fillAndSend(chrBuff, false);
+}
+
+void ENC28J60::fillAndSend(byte intgr) {
+  fillAndSend((int)intgr);
+}
+
+void ENC28J60::fillAndSend(int intgr) {
+  fillAndSend(itoa(intgr, chrBuff, 10), false);
+}
+
+void ENC28J60::fillAndSend(byte* bytes, int s) {
+  bool notCompleted;
+  byte b;
+start:
+  notCompleted = true;
+  while (totalBytesCopied<tcpMaxPayload) {
+    b = pgm_read_byte(bytes++);
+    if (s == 0) {
+      notCompleted = false;
+      break;
+    }
+    *(tcpPayloadPos+(totalBytesCopied++)) = b;
+    s--;
+  }
+  if (notCompleted) {
+    send();
+    goto start;
+  }
+}
+
+void ENC28J60::setBufferPtr(int tcpPayloadOffset) {
+    ether.httpServerReplyAck();
+    tcpPayloadPos = buffer + tcpPayloadOffset;
+    bufferPtr = tcpPayloadPos;
+    packetPayloadSize -= tcpPayloadOffset;
+    tcpMaxPayload = bufferSize - tcpPayloadOffset - 1;
+}
+//---------------------------------------------------------------------------
+
 byte ENC28J60::initialize (uint16_t size, const byte* macaddr, byte csPin) {
+    endOfBuffer = buffer + size - 1;
     bufferSize = size;
     if (bitRead(SPCR, SPE) == 0)
         initSPI();
@@ -447,6 +571,7 @@ uint16_t ENC28J60::packetReceive() {
 
         gNextPacketPtr  = header.nextPacket;
         len = header.byteCount - 4; //remove the CRC count
+        packetPayloadSize = len;
         if (len>bufferSize-1)
             len=bufferSize-1;
         if ((header.status & 0x80)==0)
@@ -460,6 +585,7 @@ uint16_t ENC28J60::packetReceive() {
             writeReg(ERXRDPT, gNextPacketPtr - 1);
         writeOp(ENC28J60_BIT_FIELD_SET, ECON2, ECON2_PKTDEC);
     }
+    lastReceivedPacketFlag = buffer[TCP_FLAGS_P];
     return len;
 }
 
